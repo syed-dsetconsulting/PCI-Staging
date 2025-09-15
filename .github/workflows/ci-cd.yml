@@ -1,0 +1,186 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  AZURE_CONTAINER_REGISTRY: your-acr-name  # Replace with your ACR name
+  CLUSTER_NAME: your-aks-cluster          # Replace with your AKS cluster name
+  CLUSTER_RESOURCE_GROUP: your-rg-name    # Replace with your resource group name
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18.x]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+        cache-dependency-path: |
+          PCI/package-lock.json
+          PCI-backend/package-lock.json
+
+    - name: Install pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: 9
+
+    - name: Install Frontend Dependencies
+      working-directory: ./PCI
+      run: pnpm install --frozen-lockfile
+
+    - name: Install Backend Dependencies
+      working-directory: ./PCI-backend
+      run: pnpm install --frozen-lockfile
+
+    - name: Lint Frontend
+      working-directory: ./PCI
+      run: pnpm run lint
+
+    - name: Build Frontend
+      working-directory: ./PCI
+      run: pnpm run build
+      env:
+        SKIP_ENV_VALIDATION: true
+
+    - name: Test Backend
+      working-directory: ./PCI-backend
+      run: pnpm test
+
+    - name: Build Backend
+      working-directory: ./PCI-backend
+      run: pnpm run build:dev
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    outputs:
+      frontend-image: ${{ steps.meta-frontend.outputs.tags }}
+      backend-image: ${{ steps.meta-backend.outputs.tags }}
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Azure CLI Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Login to Azure Container Registry
+      run: |
+        az acr login --name ${{ env.AZURE_CONTAINER_REGISTRY }}
+
+    - name: Extract Frontend metadata
+      id: meta-frontend
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io/pci-frontend
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Extract Backend metadata
+      id: meta-backend
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io/pci-backend
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Build and push Frontend Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./PCI
+        file: ./PCI/Dockerfile
+        push: true
+        tags: ${{ steps.meta-frontend.outputs.tags }}
+        labels: ${{ steps.meta-frontend.outputs.labels }}
+
+    - name: Build and push Backend Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./PCI-backend
+        file: ./PCI-backend/Dockerfile
+        push: true
+        tags: ${{ steps.meta-backend.outputs.tags }}
+        labels: ${{ steps.meta-backend.outputs.labels }}
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Azure CLI Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Set up Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: '3.12.0'
+
+    - name: Get AKS credentials
+      run: |
+        az aks get-credentials --resource-group ${{ env.CLUSTER_RESOURCE_GROUP }} --name ${{ env.CLUSTER_NAME }}
+
+    - name: Install NGINX Ingress Controller (if not exists)
+      run: |
+        kubectl create namespace ingress-nginx --dry-run=client -o yaml | kubectl apply -f -
+        helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+        helm repo update
+        helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+          --namespace ingress-nginx \
+          --set controller.service.loadBalancerIP=${{ secrets.STATIC_IP }} \
+          --wait
+
+    - name: Install cert-manager (if not exists)
+      run: |
+        kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f -
+        helm repo add jetstack https://charts.jetstack.io
+        helm repo update
+        helm upgrade --install cert-manager jetstack/cert-manager \
+          --namespace cert-manager \
+          --version v1.13.0 \
+          --set installCRDs=true \
+          --wait
+
+    - name: Deploy Application using Helm
+      run: |
+        helm upgrade --install pci-app ./helm/pci-app \
+          --namespace pci-app \
+          --create-namespace \
+          --set frontend.image.repository=${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io/pci-frontend \
+          --set frontend.image.tag=latest \
+          --set backend.image.repository=${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io/pci-backend \
+          --set backend.image.tag=latest \
+          --set ingress.hosts[0].host=${{ secrets.DOMAIN_NAME }} \
+          --set ingress.tls[0].hosts[0]=${{ secrets.DOMAIN_NAME }} \
+          --set database.auth.password=${{ secrets.DB_PASSWORD }} \
+          --wait --timeout=10m
+
+    - name: Verify Deployment
+      run: |
+        kubectl get pods -n pci-app
+        kubectl get services -n pci-app
+        kubectl get ingress -n pci-app

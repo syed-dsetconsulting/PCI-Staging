@@ -1,0 +1,101 @@
+{{- if .Values.backend.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pci-app.fullname" . }}-backend
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "pci-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  replicas: {{ .Values.backend.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "pci-app.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        {{- include "pci-app.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: backend
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      {{- if .Values.database.enabled }}
+      initContainers:
+      - name: wait-for-postgres
+        image: "{{ .Values.database.image.repository }}:{{ .Values.database.image.tag }}"
+        command: 
+        - sh
+        - -c
+        - |
+          until pg_isready -h postgres-service -p 5432 -U {{ .Values.database.auth.username }}; do
+            echo "Waiting for postgres..."
+            sleep 2
+          done
+        env:
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "pci-app.fullname" . }}-secrets
+              key: postgres-password
+      {{- end }}
+      containers:
+      - name: backend
+        image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+        imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.backend.service.port }}
+          protocol: TCP
+        env:
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "pci-app.fullname" . }}-config
+              key: BACKEND_NODE_ENV
+        - name: PORT
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "pci-app.fullname" . }}-config
+              key: BACKEND_PORT
+        {{- if .Values.database.enabled }}
+        - name: DB_URL
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "pci-app.fullname" . }}-secrets
+              key: db-url
+        {{- end }}
+        resources:
+          {{- toYaml .Values.backend.resources | nindent 12 }}
+        {{- if .Values.backend.healthcheck.enabled }}
+        livenessProbe:
+          httpGet:
+            path: {{ .Values.backend.healthcheck.path }}
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: {{ .Values.backend.healthcheck.path }}
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

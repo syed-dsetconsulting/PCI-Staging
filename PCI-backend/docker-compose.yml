@@ -13,6 +13,41 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backups:/backups
+    networks:
+      - pci-network
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+      - DB_URL=postgresql://pci:pciwebsite@123@db:5432/pci
+    ports:
+      - "3001:3001"
+    depends_on:
+      - db
+    volumes:
+      - ./uploads:/app/uploads
+    networks:
+      - pci-network
+
+  frontend:
+    build:
+      context: ../PCI
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://backend:3001
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - pci-network
 
   adminer:
     image: adminer:latest
@@ -21,7 +56,13 @@ services:
       - "8000:8080"
     depends_on:
       - db
+    networks:
+      - pci-network
 
 volumes:
   postgres_data:
     driver: local
+
+networks:
+  pci-network:
+    driver: bridge

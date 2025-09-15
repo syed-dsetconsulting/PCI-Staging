@@ -6,6 +6,7 @@ await import("./src/env.js");
 
 /** @type {import("next").NextConfig} */
 const config = {
+  output: 'standalone',
   images: {
     domains: ["www.paralympicindia.com"], // allow external image hostname
   },

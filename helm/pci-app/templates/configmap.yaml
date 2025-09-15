@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pci-app.fullname" . }}-config
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "pci-app.labels" . | nindent 4 }}
+data:
+  # Database configuration
+  POSTGRES_DB: {{ .Values.database.auth.database | quote }}
+  POSTGRES_USER: {{ .Values.database.auth.username | quote }}
+  
+  # Backend configuration
+  BACKEND_NODE_ENV: {{ .Values.backend.env.NODE_ENV | quote }}
+  BACKEND_PORT: {{ .Values.backend.env.PORT | quote }}
+  
+  # Frontend configuration
+  FRONTEND_NODE_ENV: {{ .Values.frontend.env.NODE_ENV | quote }}
+  FRONTEND_PORT: {{ .Values.frontend.env.PORT | quote }}
+  NEXT_TELEMETRY_DISABLED: {{ .Values.frontend.env.NEXT_TELEMETRY_DISABLED | quote }}
+  SKIP_ENV_VALIDATION: {{ .Values.frontend.env.SKIP_ENV_VALIDATION | quote }}

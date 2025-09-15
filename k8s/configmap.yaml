@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pci-config
+  namespace: pci-app
+data:
+  NODE_ENV: "production"
+  POSTGRES_DB: "pci"
+  POSTGRES_USER: "pci"
+  # Backend configuration
+  BACKEND_PORT: "3001"
+  # Frontend configuration  
+  FRONTEND_PORT: "3000"
+  NEXT_TELEMETRY_DISABLED: "1"
+  SKIP_ENV_VALIDATION: "1"

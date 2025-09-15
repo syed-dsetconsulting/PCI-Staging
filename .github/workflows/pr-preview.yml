@@ -1,0 +1,110 @@
+name: PR Preview Environment
+
+on:
+  pull_request:
+    branches: [ main ]
+    types: [opened, synchronize, reopened]
+
+env:
+  AZURE_CONTAINER_REGISTRY: your-acr-name  # Replace with your ACR name
+  CLUSTER_NAME: your-aks-cluster          # Replace with your AKS cluster name
+  CLUSTER_RESOURCE_GROUP: your-rg-name    # Replace with your resource group name
+
+jobs:
+  deploy-preview:
+    runs-on: ubuntu-latest
+    environment: preview
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Azure CLI Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Login to Azure Container Registry
+      run: |
+        az acr login --name ${{ env.AZURE_CONTAINER_REGISTRY }}
+
+    - name: Build and push Frontend Docker image for PR
+      uses: docker/build-push-action@v5
+      with:
+        context: ./PCI
+        file: ./PCI/Dockerfile
+        push: true
+        tags: ${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io/pci-frontend:pr-${{ github.event.number }}
+
+    - name: Build and push Backend Docker image for PR
+      uses: docker/build-push-action@v5
+      with:
+        context: ./PCI-backend
+        file: ./PCI-backend/Dockerfile
+        push: true
+        tags: ${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io/pci-backend:pr-${{ github.event.number }}
+
+    - name: Set up Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: '3.12.0'
+
+    - name: Get AKS credentials
+      run: |
+        az aks get-credentials --resource-group ${{ env.CLUSTER_RESOURCE_GROUP }} --name ${{ env.CLUSTER_NAME }}
+
+    - name: Deploy PR Preview Environment
+      run: |
+        NAMESPACE="pci-app-pr-${{ github.event.number }}"
+        helm upgrade --install pci-app-pr-${{ github.event.number }} ./helm/pci-app \
+          --namespace $NAMESPACE \
+          --create-namespace \
+          --set global.namespace=$NAMESPACE \
+          --set frontend.image.repository=${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io/pci-frontend \
+          --set frontend.image.tag=pr-${{ github.event.number }} \
+          --set backend.image.repository=${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io/pci-backend \
+          --set backend.image.tag=pr-${{ github.event.number }} \
+          --set ingress.hosts[0].host=pr-${{ github.event.number }}.${{ secrets.PREVIEW_DOMAIN }} \
+          --set ingress.tls[0].hosts[0]=pr-${{ github.event.number }}.${{ secrets.PREVIEW_DOMAIN }} \
+          --set database.auth.password=${{ secrets.DB_PASSWORD }} \
+          --wait --timeout=10m
+
+    - name: Comment PR with preview URL
+      uses: actions/github-script@v6
+      with:
+        script: |
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: `🚀 Preview environment deployed!\n\n**Preview URL:** https://pr-${{ github.event.number }}.${{ secrets.PREVIEW_DOMAIN }}\n\nThis preview will be automatically cleaned up when the PR is closed.`
+          })
+
+  cleanup-preview:
+    runs-on: ubuntu-latest
+    if: github.event.action == 'closed'
+    
+    steps:
+    - name: Azure CLI Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Set up Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: '3.12.0'
+
+    - name: Get AKS credentials
+      run: |
+        az aks get-credentials --resource-group ${{ env.CLUSTER_RESOURCE_GROUP }} --name ${{ env.CLUSTER_NAME }}
+
+    - name: Clean up PR Preview Environment
+      run: |
+        NAMESPACE="pci-app-pr-${{ github.event.number }}"
+        helm uninstall pci-app-pr-${{ github.event.number }} --namespace $NAMESPACE || true
+        kubectl delete namespace $NAMESPACE || true
+
+    - name: Clean up Docker images
+      run: |
+        az acr repository delete --name ${{ env.AZURE_CONTAINER_REGISTRY }} --image pci-frontend:pr-${{ github.event.number }} --yes || true
+        az acr repository delete --name ${{ env.AZURE_CONTAINER_REGISTRY }} --image pci-backend:pr-${{ github.event.number }} --yes || true

@@ -1,0 +1,93 @@
+{{- if .Values.database.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pci-app.fullname" . }}-postgres
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "pci-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "pci-app.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: database
+  template:
+    metadata:
+      labels:
+        {{- include "pci-app.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: database
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      containers:
+      - name: postgres
+        image: "{{ .Values.database.image.repository }}:{{ .Values.database.image.tag }}"
+        imagePullPolicy: {{ .Values.database.image.pullPolicy }}
+        ports:
+        - name: postgres
+          containerPort: 5432
+          protocol: TCP
+        env:
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "pci-app.fullname" . }}-config
+              key: POSTGRES_DB
+        - name: POSTGRES_USER
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "pci-app.fullname" . }}-config
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "pci-app.fullname" . }}-secrets
+              key: postgres-password
+        {{- if .Values.database.persistence.enabled }}
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        {{- end }}
+        resources:
+          {{- toYaml .Values.database.resources | nindent 12 }}
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - {{ .Values.database.auth.username }}
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - {{ .Values.database.auth.username }}
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      {{- if .Values.database.persistence.enabled }}
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: {{ include "pci-app.fullname" . }}-postgres-pvc
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
