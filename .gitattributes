@@ -1,0 +1,5 @@
+PCI/Dockerfile text eol=lf
+PCI-backend/Dockerfile text eol=lf
+PCI/Dockerfile.simple text eol=lf
+PCI-backend/Dockerfile.simple text eol=lf
+scripts/*.sh text eol=lf
